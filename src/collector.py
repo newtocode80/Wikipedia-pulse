@@ -1,12 +1,14 @@
+#!/usr/bin/env python3
+
 import json
-from datetime import datetime
 
+import pika
 import requests
-
-from src.app import app, db, WikipediaEdit
 
 
 STREAM_URL = "https://stream.wikimedia.org/v2/stream/recentchange"
+
+QUEUE_NAME = "wikipedia_edits"
 
 HEADERS = {
     "Accept": "text/event-stream",
@@ -14,33 +16,53 @@ HEADERS = {
 }
 
 
+def create_rabbit_connection():
+    """Connect to RabbitMQ and create the Wikipedia edits queue."""
+
+    connection = pika.BlockingConnection(
+        pika.ConnectionParameters(host="localhost")
+    )
+
+    channel = connection.channel()
+
+    channel.queue_declare(
+        queue=QUEUE_NAME,
+        durable=True
+    )
+
+    return connection, channel
+
+
 def collect_edits(limit=20):
     """
-    Collect recent Wikipedia edit events and save them
-    to the database.
+    Collect recent English Wikipedia edits and publish
+    each edit as an event to RabbitMQ.
     """
 
     collected = 0
 
+    print("Connecting to RabbitMQ...")
+
+    connection, channel = create_rabbit_connection()
+
     print("Connecting to Wikimedia EventStreams...")
 
-    with requests.get(
-        STREAM_URL,
-        headers=HEADERS,
-        stream=True,
-        timeout=60
-    ) as response:
+    try:
+        with requests.get(
+            STREAM_URL,
+            headers=HEADERS,
+            stream=True,
+            timeout=60
+        ) as response:
 
-        response.raise_for_status()
-
-        with app.app_context():
+            response.raise_for_status()
 
             for line in response.iter_lines(decode_unicode=True):
 
                 if not line:
                     continue
 
-                # SSE data messages begin with "data:"
+                # Server-Sent Event payloads begin with "data:"
                 if not line.startswith("data:"):
                     continue
 
@@ -49,51 +71,49 @@ def collect_edits(limit=20):
                 except json.JSONDecodeError:
                     continue
 
-                # Wikimedia recommends ignoring canary/test events.
+                # Ignore Wikimedia test/canary events
                 if event.get("meta", {}).get("domain") == "canary":
                     continue
 
-                # Keep the first version of our project focused
-                # on English Wikipedia.
+                # Keep Wikipedia Pulse focused on English Wikipedia
                 if event.get("server_name") != "en.wikipedia.org":
                     continue
 
-                event_time = None
+                message = {
+                    "title": event.get("title", "Unknown"),
+                    "user": event.get("user"),
+                    "wiki": event.get("wiki"),
+                    "change_type": event.get("type"),
+                    "bot": event.get("bot", False),
+                    "event_time": event.get("meta", {}).get("dt")
+                }
 
-                event_time_string = event.get("meta", {}).get("dt")
-
-                if event_time_string:
-                    try:
-                        event_time = datetime.fromisoformat(
-                            event_time_string.replace("Z", "+00:00")
-                        )
-                    except ValueError:
-                        pass
-
-                edit = WikipediaEdit(
-                    title=event.get("title", "Unknown"),
-                    user=event.get("user"),
-                    wiki=event.get("wiki"),
-                    change_type=event.get("type"),
-                    bot=event.get("bot", False),
-                    event_time=event_time
+                channel.basic_publish(
+                    exchange="",
+                    routing_key=QUEUE_NAME,
+                    body=json.dumps(message),
+                    properties=pika.BasicProperties(
+                        delivery_mode=2
+                    )
                 )
-
-                db.session.add(edit)
 
                 collected += 1
 
                 print(
-                    f"{collected}: "
-                    f"{edit.user} edited {edit.title}"
+                    f"{collected}: published "
+                    f"{message['user']} edited {message['title']}"
                 )
 
                 if collected >= limit:
                     break
 
-            db.session.commit()
+    finally:
+        connection.close()
 
-    print(f"\nSaved {collected} Wikipedia events to the database.")
+    print(
+        f"\nPublished {collected} Wikipedia edit events "
+        f"to RabbitMQ."
+    )
 
 
 if __name__ == "__main__":
