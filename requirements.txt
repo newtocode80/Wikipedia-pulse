@@ -17,6 +17,7 @@ Mako==1.4.1
 MarkupSafe==3.0.3
 packaging==26.3
 pluggy==1.6.0
+prometheus_client==0.26.0
 Pygments==2.21.0
 pytest==9.1.1
 requests==2.34.2

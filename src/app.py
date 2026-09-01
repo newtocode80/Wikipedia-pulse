@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
 
 import os
+import time
+from collections import deque
 from datetime import datetime
 from pathlib import Path
+from threading import Lock
 
-from flask import Flask, request
+from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
+from prometheus_client import Counter, REGISTRY
 
 
 # Define one explicit location for the SQLite database
@@ -29,6 +33,31 @@ app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 
 db = SQLAlchemy(app)
 migrate = Migrate(app, db)
+
+REQUEST_COUNT = Counter(
+    "wikipedia_pulse_http_requests",
+    "Total HTTP requests received by Wikipedia Pulse"
+)
+
+REQUEST_TIMESTAMPS = deque()
+REQUEST_TIMESTAMPS_LOCK = Lock()
+
+METRIC_WINDOW_SECONDS = 60
+
+@app.before_request
+def record_request():
+    now = time.monotonic()
+
+    REQUEST_COUNT.inc()
+
+    with REQUEST_TIMESTAMPS_LOCK:
+        REQUEST_TIMESTAMPS.append(now)
+
+        cutoff = now - METRIC_WINDOW_SECONDS
+
+        while REQUEST_TIMESTAMPS and REQUEST_TIMESTAMPS[0] < cutoff:
+            REQUEST_TIMESTAMPS.popleft()
+
 
 
 class WikipediaEdit(db.Model):
@@ -70,3 +99,40 @@ def main():
 def echo_input():
     input_text = request.form.get("user_input", "")
     return "You entered: " + input_text
+
+
+@app.route("/health")
+def health():
+    return jsonify({
+        "status": "ok",
+        "service": "wikipedia-pulse"
+    }), 200
+
+@app.route("/metrics")
+def metrics():
+    now = time.monotonic()
+
+    with REQUEST_TIMESTAMPS_LOCK:
+        cutoff = now - METRIC_WINDOW_SECONDS
+
+        while REQUEST_TIMESTAMPS and REQUEST_TIMESTAMPS[0] < cutoff:
+            REQUEST_TIMESTAMPS.popleft()
+
+        requests_last_minute = len(REQUEST_TIMESTAMPS)
+
+    requests_per_second = (
+        requests_last_minute / METRIC_WINDOW_SECONDS
+    )
+
+    total_requests = (
+        REGISTRY.get_sample_value(
+            "wikipedia_pulse_http_requests_total"
+        ) or 0
+    )
+
+    return jsonify({
+        "requests_total": int(total_requests),
+        "requests_last_60_seconds": requests_last_minute,
+        "requests_per_second": round(requests_per_second, 3),
+        "window_seconds": METRIC_WINDOW_SECONDS
+    }), 200
