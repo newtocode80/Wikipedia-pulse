@@ -52,6 +52,8 @@ class WikipediaEdit(db.Model):
         db.DateTime,
         default=datetime.utcnow
     )
+def format_echo(input_text):
+    return "You entered: " + input_text
 
 
 @app.route("/")
