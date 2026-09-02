@@ -42,3 +42,11 @@ def test_metrics_endpoint():
 
     assert data["requests_total"] >= 1
     assert data["requests_per_second"] >= 0
+
+def test_report_endpoint():
+    client = app.test_client()
+
+    response = client.get("/report")
+
+    assert response.status_code == 200
+    assert b"Wikipedia Pulse Report" in response.data

@@ -11,6 +11,7 @@ from flask import Flask, request, jsonify
 from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 from prometheus_client import Counter, REGISTRY
+from sqlalchemy import func
 
 
 # Define one explicit location for the SQLite database
@@ -136,3 +137,86 @@ def metrics():
         "requests_per_second": round(requests_per_second, 3),
         "window_seconds": METRIC_WINDOW_SECONDS
     }), 200
+
+
+@app.route("/report")
+def report():
+    total_edits = WikipediaEdit.query.count()
+
+    if total_edits == 0:
+        return """
+        <h1>Wikipedia Pulse Report</h1>
+        <p>No Wikipedia edit data is currently available.</p>
+        """, 200
+
+    unique_pages = (
+        db.session.query(
+            func.count(func.distinct(WikipediaEdit.title))
+        )
+        .scalar()
+    )
+
+    bot_edits = (
+        WikipediaEdit.query
+        .filter(WikipediaEdit.bot.is_(True))
+        .count()
+    )
+
+    human_edits = total_edits - bot_edits
+    bot_percentage = (bot_edits / total_edits) * 100
+    average_edits_per_page = total_edits / unique_pages
+
+    top_pages = (
+        db.session.query(
+            WikipediaEdit.title,
+            func.count(WikipediaEdit.id).label("edit_count")
+        )
+        .group_by(WikipediaEdit.title)
+        .order_by(func.count(WikipediaEdit.id).desc())
+        .limit(5)
+        .all()
+    )
+
+    top_editors = (
+        db.session.query(
+            WikipediaEdit.user,
+            func.count(WikipediaEdit.id).label("edit_count")
+        )
+        .filter(WikipediaEdit.user.isnot(None))
+        .group_by(WikipediaEdit.user)
+        .order_by(func.count(WikipediaEdit.id).desc())
+        .limit(5)
+        .all()
+    )
+
+    top_pages_html = "".join(
+        f"<li>{title}: {count} edits</li>"
+        for title, count in top_pages
+    )
+
+    top_editors_html = "".join(
+        f"<li>{user}: {count} edits</li>"
+        for user, count in top_editors
+    )
+
+    return f"""
+    <h1>Wikipedia Pulse Report</h1>
+
+    <h2>Summary</h2>
+    <p><strong>Total edits:</strong> {total_edits}</p>
+    <p><strong>Unique pages:</strong> {unique_pages}</p>
+    <p><strong>Average edits per page:</strong> {average_edits_per_page:.2f}</p>
+    <p><strong>Human edits:</strong> {human_edits}</p>
+    <p><strong>Bot edits:</strong> {bot_edits}</p>
+    <p><strong>Bot percentage:</strong> {bot_percentage:.1f}%</p>
+
+    <h2>Top 5 Most Edited Pages</h2>
+    <ol>
+        {top_pages_html}
+    </ol>
+
+    <h2>Top 5 Most Active Editors</h2>
+    <ol>
+        {top_editors_html}
+    </ol>
+    """, 200
