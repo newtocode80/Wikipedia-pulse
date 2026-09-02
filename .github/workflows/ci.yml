@@ -22,5 +22,8 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Apply database migrations
+        run: python -m flask --app src/app.py db upgrade
+
       - name: Run tests
         run: python -m pytest -v
