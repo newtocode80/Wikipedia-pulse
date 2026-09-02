@@ -12,6 +12,7 @@ from flask_sqlalchemy import SQLAlchemy
 from flask_migrate import Migrate
 from prometheus_client import Counter, REGISTRY
 from sqlalchemy import func
+from sqlalchemy.exc import OperationalError
 
 
 # Define one explicit location for the SQLite database
@@ -141,7 +142,13 @@ def metrics():
 
 @app.route("/report")
 def report():
-    total_edits = WikipediaEdit.query.count()
+    try:
+        total_edits = WikipediaEdit.query.count()
+    except OperationalError:
+        return """
+        <h1>Wikipedia Pulse Report</h1>
+        <p>No Wikipedia edit data is currently available in this environment.</p>
+        """, 200
 
     if total_edits == 0:
         return """
